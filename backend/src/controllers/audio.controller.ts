@@ -2,7 +2,7 @@ import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { meetingService } from '../services/meeting.service';
 import { whisperService } from '../services/whisper.service';
-import { claudeService } from '../services/claude.service';
+import { llmService } from '../services/llm.service';
 import { exportService } from '../services/export.service';
 import prisma from '../utils/prisma';
 import { getIo } from '../utils/socket';
@@ -108,7 +108,7 @@ export const audioController = {
 
       let fullContent = '';
 
-      const generator = claudeService.generateMinutes(
+      const generator = llmService.generateMinutes(
         {
           segments: meeting.transcript.segments,
           rawText: meeting.transcript.rawText,

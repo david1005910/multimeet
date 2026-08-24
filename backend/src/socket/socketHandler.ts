@@ -1,6 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { verifyToken } from '../utils/jwt';
-import { claudeService } from '../services/claude.service';
+import { llmService } from '../services/llm.service';
 import { whisperService } from '../services/whisper.service';
 import prisma from '../utils/prisma';
 import fs from 'fs';
@@ -189,7 +189,7 @@ export function setupSocketHandlers(io: Server): void {
 
         if (data.language === 'ko') {
           const lang = data.targetLanguage || 'zh';
-          const translated = await claudeService.translateFromKorean(transcript.rawText, lang);
+          const translated = await llmService.translateFromKorean(transcript.rawText, lang);
           socket.emit('translation-result', {
             timestamp: data.timestamp,
             original: transcript.rawText,
@@ -198,7 +198,7 @@ export function setupSocketHandlers(io: Server): void {
             meetingId: data.meetingId,
           });
         } else {
-          const translated = await claudeService.translate(transcript.rawText, data.language);
+          const translated = await llmService.translate(transcript.rawText, data.language);
           socket.emit('translation-result', {
             timestamp: data.timestamp,
             original: transcript.rawText,

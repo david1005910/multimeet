@@ -11,22 +11,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **MultiMeet** is a multilingual meeting interpretation and transcription system for B2B sales professionals. Supports real-time translation and meeting minutes generation for meetings in English, Mandarin Chinese, and Vietnamese, with all output in Korean.
 
 **Two core modes:**
-- **Minutes Mode**: Upload/record audio → Whisper STT → Ollama LLM summarization → Korean meeting minutes (DOCX/MD download)
-- **Interpretation Mode**: Live microphone → 5s audio chunks → Whisper STT → Ollama translation → real-time dual-panel display
+- **Minutes Mode**: Upload/record audio → Whisper STT → Gemini LLM summarization → Korean meeting minutes (DOCX/MD download)
+- **Interpretation Mode**: Live microphone → 5s audio chunks → Whisper STT → Gemini translation → real-time dual-panel display
 
 ## Running the Project
 
 ```bash
-# 1. Ollama 시작 (외부 의존성은 이것 하나뿐)
-brew services start ollama
-
-# 2. 서버 실행 (프로젝트 루트에서)
+# 1. 서버 실행 (프로젝트 루트에서)
 npm run dev
-# 또는 각각:
-# backend/: ../node_modules/.bin/nodemon
-# frontend/: ../node_modules/.bin/vite
-
-# 3. 접속
+# 2. 접속
 # 프론트엔드: http://localhost:5173
 # 백엔드 API: http://localhost:3001
 # Prisma Studio: npm run db:studio
@@ -39,7 +32,7 @@ DB는 SQLite 파일(`backend/prisma/multimeet.db`)이라 별도 서비스 기동
 **Frontend:** React 18 + TypeScript + Vite + TailwindCSS + Zustand + React Query + Socket.io-client
 **Backend:** Node.js 20 + Express + TypeScript + Prisma (SQLite) + Socket.io
 **STT/TTS:** OpenAI API (`whisper-1`, `tts-1`) — `OPENAI_API_KEY` 필요
-**LLM:** Ollama (`gemma3:4b` 로컬 실행) — 번역 및 회의록 생성
+**LLM:** Google Gemini (`gemini-2.5-flash`, `GEMINI_MODEL`로 변경 가능) — 번역 및 회의록 생성
 **Infrastructure:** 없음. 단일 exe 배포를 위해 PostgreSQL/Redis/Docker를 모두 제거했다.
 
 ## Key Files
@@ -50,7 +43,7 @@ backend/src/
   app.ts                 # Express 라우팅
   services/
     whisper.service.ts   # Whisper STT (toFile()로 MIME 명시)
-    claude.service.ts    # Ollama 번역/회의록 (fetch 기반)
+    llm.service.ts       # Gemini 번역/회의록 (fetch 기반)
     meeting.service.ts   # 회의 CRUD + JSON 필드 직렬화 담당
   socket/socketHandler.ts # 실시간 통역 WebSocket
   utils/
@@ -73,8 +66,8 @@ frontend/src/
 DATABASE_URL="file:./multimeet.db"   # prisma CLI 기준 경로 = backend/prisma/
 JWT_SECRET="..."
 OPENAI_API_KEY="sk-..."              # Whisper STT / TTS용
-OLLAMA_URL="http://localhost:11434"
-OLLAMA_MODEL="gemma3:4b"
+GEMINI_API_KEY="AIza..."             # 번역/회의록 생성용 (https://aistudio.google.com/apikey)
+GEMINI_MODEL="gemini-2.5-flash"
 FRONTEND_URL="http://localhost:5173"
 UPLOAD_DIR="./uploads"
 ```
@@ -112,7 +105,7 @@ npm run package:win    # 위 + MultiMeet-Windows-x64.zip 압축
 
 **결과물은 exe 하나다.** Node 18 런타임, 백엔드, 빌드된 프론트엔드,
 Prisma Windows 쿼리 엔진, `prisma/init.sql`이 모두 안에 들어 있다.
-외부 의존성은 Ollama 하나뿐이다.
+외부 API는 OpenAI(Whisper·TTS)와 Gemini(LLM)뿐이다.
 
 ### 런타임 동작 (`utils/bootstrap.ts`)
 

@@ -55,9 +55,9 @@ if (isPackaged) {
       '# 음성 인식(Whisper)에 필요합니다. https://platform.openai.com/api-keys',
       'OPENAI_API_KEY=',
       '',
-      '# 로컬 LLM (Ollama). 기본값 그대로 두면 됩니다.',
-      'OLLAMA_URL=http://localhost:11434',
-      'OLLAMA_MODEL=gemma3:4b',
+      '# 회의록 생성/번역 AI. https://aistudio.google.com/apikey 에서 발급하세요.',
+      'GEMINI_API_KEY=',
+      'GEMINI_MODEL=gemini-2.5-flash',
       '',
       '# 웹 서버 포트',
       'PORT=3001',
@@ -68,7 +68,7 @@ if (isPackaged) {
     fs.writeFileSync(path.join(dataDir, '.env'), template);
     process.env.JWT_SECRET = secret;
     console.log(`  설정 파일을 만들었습니다: ${path.join(dataDir, '.env')}`);
-    console.log('  음성 인식을 쓰려면 이 파일에 OPENAI_API_KEY를 넣고 다시 실행하세요.');
+    console.log('  음성 인식은 OPENAI_API_KEY, 회의록/번역은 GEMINI_API_KEY를 넣고 다시 실행하세요.');
   }
 
   fs.mkdirSync(runtimeDir, { recursive: true });
