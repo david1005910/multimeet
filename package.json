@@ -1,0 +1,20 @@
+{
+  "name": "multimeet",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w backend\" \"npm run dev -w frontend\"",
+    "build:win": "node build-windows.js",
+    "package:win": "node build-windows.js && cd dist-win && zip -rq ../MultiMeet-Windows-x64.zip . -x '*.DS_Store'",
+    "db:studio": "npm exec -w backend -- prisma studio",
+    "db:migrate": "npm exec -w backend -- prisma migrate dev"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "electron-builder": "^26.15.3",
+    "pkg": "^5.8.1"
+  }
+}

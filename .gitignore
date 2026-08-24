@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+uploads/
+*.log
+.DS_Store
+*.exe
+multimeet
+multimeet-*
+backend/.env
+backend/dist/
+frontend/dist/
+
+# 빌드 시 생성되는 산출물
+dist-win/
+backend/bundled/
+backend/prisma/init.sql
+backend/prisma/*.db
+backend/prisma/*.db-journal
