@@ -1,5 +1,13 @@
 import prisma from '../utils/prisma';
 
+// 미존재/무권한은 구분하지 않고 하나의 404성 에러로 다룬다 (리소스 열거 방지)
+export class MeetingNotFoundError extends Error {
+  constructor() {
+    super('회의를 찾을 수 없습니다.');
+    this.name = 'MeetingNotFoundError';
+  }
+}
+
 // SQLite에는 스칼라 배열이 없어 participants를 JSON 문자열로 저장한다.
 // API 응답은 기존과 동일하게 string[]를 유지하기 위해 여기서 변환한다.
 function parseParticipants(value: string): string[] {
@@ -82,7 +90,7 @@ export class MeetingService {
       where: { id, userId, deletedAt: null },
       include: { transcript: true, minutes: true, interpretLogs: true },
     });
-    if (!meeting) throw new Error('회의를 찾을 수 없습니다.');
+    if (!meeting) throw new MeetingNotFoundError();
     return serializeMeeting(meeting);
   }
 
@@ -94,7 +102,7 @@ export class MeetingService {
     audioPath: string;
   }>) {
     const owned = await prisma.meeting.findFirst({ where: { id, userId, deletedAt: null } });
-    if (!owned) throw new Error('회의를 찾을 수 없습니다.');
+    if (!owned) throw new MeetingNotFoundError();
     const { participants, ...rest } = data;
     const meeting = await prisma.meeting.update({
       where: { id },
@@ -109,7 +117,7 @@ export class MeetingService {
 
   async deleteMeeting(id: string, userId: string) {
     const meeting = await prisma.meeting.findFirst({ where: { id, userId } });
-    if (!meeting) throw new Error('회의를 찾을 수 없습니다.');
+    if (!meeting) throw new MeetingNotFoundError();
     await prisma.meeting.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 }

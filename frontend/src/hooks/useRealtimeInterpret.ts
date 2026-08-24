@@ -34,7 +34,6 @@ export function useRealtimeInterpret(meetingId: string, language: string, target
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
   const audioPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // 현재 5초 윈도우에 유효한 발화가 있었는지
   const windowHasAudioRef = useRef(false)
@@ -106,7 +105,6 @@ export function useRealtimeInterpret(meetingId: string, language: string, target
     analyser.fftSize = 512
     audioCtx.createMediaStreamSource(stream).connect(analyser)
     audioCtxRef.current = audioCtx
-    analyserRef.current = analyser
     windowHasAudioRef.current = false
 
     // 100ms마다 RMS 측정 → 유효 발화 감지
@@ -150,7 +148,6 @@ export function useRealtimeInterpret(meetingId: string, language: string, target
     streamRef.current = null
     audioCtxRef.current?.close()
     audioCtxRef.current = null
-    analyserRef.current = null
     socketRef.current?.emit('leave-session', meetingId)
     socketRef.current?.disconnect()
     socketRef.current = null

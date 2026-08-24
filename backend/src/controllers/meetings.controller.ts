@@ -1,6 +1,10 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
-import { meetingService } from '../services/meeting.service';
+import { meetingService, MeetingNotFoundError } from '../services/meeting.service';
+
+function isNotFound(err: unknown): boolean {
+  return err instanceof MeetingNotFoundError;
+}
 
 export const meetingsController = {
   async create(req: AuthRequest, res: Response): Promise<void> {
@@ -27,7 +31,13 @@ export const meetingsController = {
       const meeting = await meetingService.getMeetingById(req.params.id, req.userId!);
       res.json(meeting);
     } catch (err: any) {
-      res.status(404).json({ error: err.message });
+      // 미존재/무권한만 404. 그 외(DB 장애 등)는 500로 구분한다.
+      if (isNotFound(err)) {
+        res.status(404).json({ error: err.message });
+        return;
+      }
+      console.error('[Meetings.getById]', err);
+      res.status(500).json({ error: err.message });
     }
   },
 
@@ -36,7 +46,12 @@ export const meetingsController = {
       const meeting = await meetingService.updateMeeting(req.params.id, req.userId!, req.body);
       res.json(meeting);
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      if (isNotFound(err)) {
+        res.status(404).json({ error: err.message });
+        return;
+      }
+      console.error('[Meetings.update]', err);
+      res.status(500).json({ error: err.message });
     }
   },
 
@@ -45,7 +60,12 @@ export const meetingsController = {
       await meetingService.deleteMeeting(req.params.id, req.userId!);
       res.status(204).send();
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      if (isNotFound(err)) {
+        res.status(404).json({ error: err.message });
+        return;
+      }
+      console.error('[Meetings.delete]', err);
+      res.status(500).json({ error: err.message });
     }
   },
 };

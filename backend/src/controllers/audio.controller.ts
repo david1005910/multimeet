@@ -7,10 +7,11 @@ import { exportService } from '../services/export.service';
 import prisma from '../utils/prisma';
 import { getIo } from '../utils/socket';
 import { getOpenAI } from '../utils/openai';
+import { MeetingNotFoundError } from '../services/meeting.service';
 
 // 서비스 계층의 미존재/무권한 오류를 404로 매핑하기 위한 헬퍼
 function isNotFoundError(err: unknown): boolean {
-  return err instanceof Error && err.message === '회의를 찾을 수 없습니다.';
+  return err instanceof MeetingNotFoundError;
 }
 
 // minutes/logs 엔드포인트 공통: 회의 소유자인지 확인 (아니면 null)

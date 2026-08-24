@@ -14,6 +14,25 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// 여러 요청이 동시에 401을 받아도 refresh는 한 번만 호출된다 (single-flight)
+let refreshPromise: Promise<string> | null = null
+
+function refreshAccessToken(refreshToken: string): Promise<string> {
+  if (!refreshPromise) {
+    refreshPromise = axios
+      .post(`${BASE_URL}/api/auth/refresh`, { refreshToken })
+      .then(({ data }) => {
+        const state = useAuthStore.getState()
+        useAuthStore.getState().setAuth(state.user!, data.token, refreshToken)
+        return data.token as string
+      })
+      .finally(() => {
+        refreshPromise = null
+      })
+  }
+  return refreshPromise
+}
+
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
@@ -31,10 +50,8 @@ api.interceptors.response.use(
       }
       original._retry = true
       try {
-        const { data } = await axios.post(`${BASE_URL}/api/auth/refresh`, { refreshToken })
-        const state = useAuthStore.getState()
-        useAuthStore.getState().setAuth(state.user!, data.token, refreshToken)
-        original.headers.Authorization = `Bearer ${data.token}`
+        const token = await refreshAccessToken(refreshToken)
+        original.headers.Authorization = `Bearer ${token}`
         return api(original)
       } catch {
         useAuthStore.getState().logout()
