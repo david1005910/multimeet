@@ -14,6 +14,13 @@ const MIME_MAP: Record<string, string> = {
   '.flac': 'audio/flac',
 };
 
+// gpt-4o-mini-transcribe의 출력 언어를 강하게 유도하는 프롬프트
+const FAST_PROMPTS: Record<string, string> = {
+  en: 'Business meeting conversation in English.',
+  zh: '商务会议对话，使用中文普通话。',
+  vi: 'Cuộc họp kinh doanh bằng tiếng Việt.',
+};
+
 export interface TranscriptSegment {
   id: number;
   start: number;
@@ -41,6 +48,45 @@ export class WhisperService {
     }
 
     return this.transcribeFile(audioPath, language);
+  }
+
+  /**
+   * 실시간 통역 전용 고속 경로.
+   * gpt-4o-mini-transcribe는 whisper-1보다 평균 0.5~1초 빠르지만, 언어 힌트만으로는
+   * 출력 언어가 엉뚱하게 정해질 수 있어(영어를 한글 표기로 받아쓰는 등) 언어별
+   * 프롬프트로 강하게 유도하고, 그래도 스크립트가 틀리면 whisper-1로 폴백한다.
+   * 세그먼트/타임스탬프가 필요 없는 실시간 모드에서만 사용할 것.
+   */
+  async transcribeFast(audioPath: string, language: string): Promise<TranscriptResult> {
+    const ext = path.extname(audioPath).toLowerCase();
+    const mimeType = MIME_MAP[ext] || 'audio/webm';
+    const fileName = path.basename(audioPath);
+    const file = await toFile(fs.createReadStream(audioPath), fileName, { type: mimeType });
+
+    const lang = (language || '').split('-')[0].toLowerCase();
+    const response = await getOpenAI().audio.transcriptions.create({
+      file,
+      model: 'gpt-4o-mini-transcribe',
+      language: lang || undefined,
+      prompt: FAST_PROMPTS[lang] || FAST_PROMPTS.en,
+    });
+
+    let text = (response.text || '').trim();
+
+    // 스크립트 가드: 영어 요청인데 한글/한자가 절반을 넘으면 잘못 받아쓴 것 → whisper-1 폴백
+    if (lang === 'en' && text && this.wrongScriptRatio(text) > 0.5) {
+      return this.transcribeFile(audioPath, language);
+    }
+
+    return { segments: [], rawText: text, language: language, avgNoSpeechProb: 0 };
+  }
+
+  /** 한글+한자 등 비라틴 문자 비율 (영어 오검출 감지용) */
+  private wrongScriptRatio(text: string): number {
+    const letters = text.replace(/[^\p{L}]/gu, '');
+    if (!letters.length) return 0;
+    const nonLatin = letters.replace(/[\p{Script=Latin}]/gu, '');
+    return nonLatin.length / letters.length;
   }
 
   private async transcribeFile(audioPath: string, language: string): Promise<TranscriptResult> {

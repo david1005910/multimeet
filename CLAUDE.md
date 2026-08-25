@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Two core modes:**
 - **Minutes Mode**: Upload/record audio → Whisper STT → Gemini LLM summarization → Korean meeting minutes (DOCX/MD download)
-- **Interpretation Mode**: Live microphone → 5s audio chunks → Whisper STT → Gemini translation → real-time dual-panel display
+- **Interpretation Mode**: Live microphone → 4s audio chunks → Whisper STT → Gemini translation → real-time dual-panel display
 
 ## Running the Project
 
@@ -31,7 +31,8 @@ DB는 SQLite 파일(`backend/prisma/multimeet.db`)이라 별도 서비스 기동
 
 **Frontend:** React 18 + TypeScript + Vite + TailwindCSS + Zustand + React Query + Socket.io-client
 **Backend:** Node.js 20 + Express + TypeScript + Prisma (SQLite) + Socket.io
-**STT/TTS:** OpenAI API (`whisper-1`, `tts-1`) — `OPENAI_API_KEY` 필요
+**STT/TTS:** OpenAI API (`whisper-1`, `gpt-4o-mini-transcribe`, `tts-1`) — `OPENAI_API_KEY` 필요
+**실시간 STT:** Deepgram (`nova-2` 스트리밍) — `DEEPGRAM_API_KEY`. 키가 없으면 Whisper 청크 모드로 자동 폴백
 **LLM:** Google Gemini (`gemini-2.5-flash`, `GEMINI_MODEL`로 변경 가능) — 번역 및 회의록 생성
 **Infrastructure:** 없음. 단일 exe 배포를 위해 PostgreSQL/Redis/Docker를 모두 제거했다.
 
@@ -42,7 +43,8 @@ backend/src/
   server.ts              # HTTP + Socket.IO 진입점
   app.ts                 # Express 라우팅
   services/
-    whisper.service.ts   # Whisper STT (toFile()로 MIME 명시)
+    whisper.service.ts   # Whisper STT (toFile()로 MIME 명시) + transcribeFast(실시간 고속)
+    deepgram.service.ts  # Deepgram 라이브 스트리밍 STT (실시간 통역 고속 경로)
     llm.service.ts       # Gemini 번역/회의록 (fetch 기반)
     meeting.service.ts   # 회의 CRUD + JSON 필드 직렬화 담당
   socket/socketHandler.ts # 실시간 통역 WebSocket

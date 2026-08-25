@@ -2,6 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { verifyToken } from '../utils/jwt';
 import { llmService } from '../services/llm.service';
 import { whisperService } from '../services/whisper.service';
+import { DeepgramLive, isDeepgramConfigured } from '../services/deepgram.service';
 import prisma from '../utils/prisma';
 import fs from 'fs';
 import os from 'os';
@@ -118,6 +119,64 @@ function isDuplicate(socketId: string, text: string): boolean {
 
 // ──────────────────────────────────────────
 
+/**
+ * 오디오 버퍼의 매직 바이트로 컨테이너 형식을 판별한다.
+ * 브라우저마다 MediaRecorder 출력이 다르다(Chrome: webm, Safari: mp4).
+ * 확장자를 하드코딩하면 Safari 청크가 전부 Whisper 400 에러가 된다.
+ */
+function sniffAudioExt(buf: Buffer): string {
+  if (buf.length >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return '.webm'; // EBML
+  if (buf.length >= 4 && buf.subarray(0, 4).toString('latin1') === 'RIFF') return '.wav';
+  if (buf.length >= 8 && buf.subarray(4, 8).toString('latin1') === 'ftyp') return '.mp4';
+  if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return '.mp3'; // MPEG sync
+  if (buf.length >= 4 && buf.subarray(0, 4).toString('latin1') === 'OggS') return '.ogg';
+  return '.webm';
+}
+
+/** 확정 텍스트 공통 처리: 환각/중복 필터 → Gemini 번역 → 결과 전송 (청크/스트리밍 양쪽에서 사용) */
+async function translateAndEmit(
+  socket: Socket,
+  params: {
+    meetingId: string;
+    timestamp: number;
+    text: string;
+    language: string;
+    targetLanguage?: string;
+  }
+): Promise<void> {
+  const { meetingId, timestamp, text, language, targetLanguage } = params;
+  if (!text.trim()) return;
+
+  if (isHallucination(text)) {
+    console.log(`[Socket] 환각 필터: "${text.trim()}"`);
+    return;
+  }
+  if (isDuplicate(socket.id, text)) {
+    console.log(`[Socket] 중복 필터: "${text.trim()}"`);
+    return;
+  }
+
+  if (language === 'ko') {
+    const lang = targetLanguage || 'zh';
+    const translated = await llmService.translateFromKorean(text, lang);
+    socket.emit('translation-result', {
+      timestamp,
+      original: text,
+      translated,
+      targetLanguage: lang,
+      meetingId,
+    });
+  } else {
+    const translated = await llmService.translate(text, language);
+    socket.emit('translation-result', {
+      timestamp,
+      original: text,
+      translated,
+      meetingId,
+    });
+  }
+}
+
 export function setupSocketHandlers(io: Server): void {
   io.use((socket, next) => {
     const token = socket.handshake.auth.token;
@@ -131,6 +190,7 @@ export function setupSocketHandlers(io: Server): void {
     console.log(`[Socket] 연결: ${socket.id}`);
 
     socket.on('join-session', async (meetingId: string) => {
+      if (typeof meetingId !== 'string' || !meetingId) return;
       // 세션 소유자만 참여 가능 (다른 사용자의 STT 결과 도청 방지)
       const owned = await prisma.meeting.findFirst({
         where: { id: meetingId, userId: (socket as any).userId, deletedAt: null },
@@ -141,6 +201,70 @@ export function setupSocketHandlers(io: Server): void {
       }
       socket.join(meetingId);
       console.log(`[Socket] ${socket.id} → 세션 ${meetingId} 참여`);
+      // 프론트엔드가 스트리밍 모드 사용 가능 여부를 알 수 있도록 설정 전달
+      socket.emit('session-config', { streaming: isDeepgramConfigured() });
+    });
+
+    // ── Deepgram 실시간 스트리밍 경로 ──
+    const dgSessions = new Map<string, DeepgramLive>();
+
+    socket.on('stream-start', async (data: {
+      meetingId: string;
+      language: string;
+      targetLanguage?: string;
+    }) => {
+      try {
+        if (!isDeepgramConfigured()) {
+          socket.emit('translation-error', { message: '실시간 STT가 설정되지 않았습니다. 청크 모드로 동작합니다.' });
+          return;
+        }
+        if (!data || typeof data.meetingId !== 'string' || !data.meetingId || typeof data.language !== 'string') {
+          return;
+        }
+        // 세션 소유자 확인 (청크 경로의 join-session 검사와 동일)
+        const owned = await prisma.meeting.findFirst({
+          where: { id: data.meetingId, userId: (socket as any).userId, deletedAt: null },
+        });
+        if (!owned) {
+          socket.emit('translation-error', { message: '세션에 참여할 권한이 없습니다.' });
+          return;
+        }
+
+        dgSessions.get(socket.id)?.finish();
+        const session = new DeepgramLive({
+          language: data.language,
+          onInterim: (text) => socket.emit('transcript-interim', { text }),
+          onFinal: (text) => {
+            translateAndEmit(socket, {
+              meetingId: data.meetingId,
+              timestamp: Date.now(),
+              text,
+              language: data.language,
+              targetLanguage: data.targetLanguage,
+            }).catch((e) => console.error('[Socket] 스트리밍 번역 오류:', e));
+          },
+          onError: () => {
+            socket.emit('translation-error', { message: '음성 인식 연결에 문제가 발생했습니다.' });
+          },
+        });
+        dgSessions.set(socket.id, session);
+      } catch (error: any) {
+        console.error('[Socket] stream-start 오류:', error);
+        socket.emit('translation-error', { message: '실시간 인식 시작에 실패했습니다.' });
+      }
+    });
+
+    socket.on('audio-stream', (chunk: ArrayBuffer | Buffer) => {
+      // socket.io는 클라이언트의 ArrayBuffer를 서버에서 Node Buffer로 재구성한다
+      const buf = chunk instanceof ArrayBuffer ? Buffer.from(chunk)
+        : Buffer.isBuffer(chunk) ? chunk : null;
+      if (!buf || buf.length === 0) return;
+      dgSessions.get(socket.id)?.send(buf);
+    });
+
+    socket.on('stream-stop', () => {
+      dgSessions.get(socket.id)?.finish();
+      dgSessions.delete(socket.id);
     });
 
     socket.on('audio-chunk', async (data: {
@@ -158,13 +282,13 @@ export function setupSocketHandlers(io: Server): void {
         const tmpDir = os.tmpdir();
         if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
-        const tmpPath = path.join(tmpDir, `chunk-${uuidv4()}.webm`);
         const audioBuffer = Buffer.from(data.audioBase64, 'base64');
+        const tmpPath = path.join(tmpDir, `chunk-${uuidv4()}${sniffAudioExt(audioBuffer)}`);
         fs.writeFileSync(tmpPath, audioBuffer);
 
         let transcript;
         try {
-          transcript = await whisperService.transcribe(tmpPath, data.language);
+          transcript = await whisperService.transcribeFast(tmpPath, data.language);
         } finally {
           // Whisper 실패 시에도 청크 파일이 남지 않도록 한다
           try { fs.unlinkSync(tmpPath); } catch { /* already removed */ }
@@ -178,34 +302,13 @@ export function setupSocketHandlers(io: Server): void {
           return;
         }
 
-        if (isHallucination(transcript.rawText)) {
-          console.log(`[Socket] 환각 필터: "${transcript.rawText.trim()}"`);
-          return;
-        }
-        if (isDuplicate(socket.id, transcript.rawText)) {
-          console.log(`[Socket] 중복 필터: "${transcript.rawText.trim()}"`);
-          return;
-        }
-
-        if (data.language === 'ko') {
-          const lang = data.targetLanguage || 'zh';
-          const translated = await llmService.translateFromKorean(transcript.rawText, lang);
-          socket.emit('translation-result', {
-            timestamp: data.timestamp,
-            original: transcript.rawText,
-            translated,
-            targetLanguage: lang,
-            meetingId: data.meetingId,
-          });
-        } else {
-          const translated = await llmService.translate(transcript.rawText, data.language);
-          socket.emit('translation-result', {
-            timestamp: data.timestamp,
-            original: transcript.rawText,
-            translated,
-            meetingId: data.meetingId,
-          });
-        }
+        await translateAndEmit(socket, {
+          meetingId: data.meetingId,
+          timestamp: data.timestamp,
+          text: transcript.rawText,
+          language: data.language,
+          targetLanguage: data.targetLanguage,
+        });
       } catch (error: any) {
         console.error('[Socket] 처리 오류:', error);
         socket.emit('translation-error', { message: '번역 처리 중 오류가 발생했습니다.' });
@@ -218,6 +321,8 @@ export function setupSocketHandlers(io: Server): void {
     });
 
     socket.on('disconnect', () => {
+      dgSessions.get(socket.id)?.close();
+      dgSessions.delete(socket.id);
       recentTranscripts.delete(socket.id);
       console.log(`[Socket] 해제: ${socket.id}`);
     });

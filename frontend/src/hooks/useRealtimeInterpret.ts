@@ -2,11 +2,15 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { io, Socket } from 'socket.io-client'
 import { useAuthStore } from '../stores/authStore'
 import { API_BASE_URL } from '../services/apiBase'
+import { startMicStreaming, MicStreamerHandle } from '../services/micStreamer'
 import { TranslationItem } from '../types'
 
-const CHUNK_INTERVAL_MS = 6000
+// 청크 주기: 짧으면 대기 지연이 줄지만 Whisper 받아쓰기 정확도가 떨어진다 (4초가 실용적 하한)
+const CHUNK_INTERVAL_MS = 4000
 // RMS 0~1 범위에서 이 값 이상이면 유효한 발화로 판단
 const AUDIO_RMS_THRESHOLD = 0.015
+// 서버의 session-config 응답 대기 시간 (초과 시 청크 모드로 폴백)
+const CONFIG_TIMEOUT_MS = 1500
 
 function sendBlob(socket: Socket, blob: Blob, meetingId: string, language: string, targetLanguage?: string) {
   if (blob.size < 500) return
@@ -24,9 +28,26 @@ function sendBlob(socket: Socket, blob: Blob, meetingId: string, language: strin
   reader.readAsDataURL(blob)
 }
 
+/** 서버가 스트리밍 STT(Deepgram)를 지원하는지 확인. 응답이 없으면 청크 모드. */
+function waitForSessionConfig(socket: Socket): Promise<{ streaming: boolean }> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      socket.off('session-config', handler)
+      resolve({ streaming: false })
+    }, CONFIG_TIMEOUT_MS)
+    const handler = (cfg: { streaming?: boolean }) => {
+      clearTimeout(timer)
+      socket.off('session-config', handler)
+      resolve({ streaming: !!cfg?.streaming })
+    }
+    socket.once('session-config', handler)
+  })
+}
+
 export function useRealtimeInterpret(meetingId: string, language: string, targetLanguage?: string) {
   const [isActive, setIsActive] = useState(false)
   const [items, setItems] = useState<TranslationItem[]>([])
+  const [interim, setInterim] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const socketRef = useRef<Socket | null>(null)
@@ -35,10 +56,13 @@ export function useRealtimeInterpret(meetingId: string, language: string, target
   const recorderRef = useRef<MediaRecorder | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const audioPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  // 현재 5초 윈도우에 유효한 발화가 있었는지
+  // 현재 청크 윈도우에 유효한 발화가 있었는지
   const windowHasAudioRef = useRef(false)
   // onstop 시점에 실제 전송 여부를 전달하는 ref
   const shouldSendRef = useRef(true)
+  // 현재 동작 모드와 스트리밍 핸들
+  const modeRef = useRef<'chunked' | 'streaming'>('chunked')
+  const micStreamerRef = useRef<MicStreamerHandle | null>(null)
 
   const startChunkRecorder = useCallback((stream: MediaStream, socket: Socket) => {
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
@@ -79,7 +103,12 @@ export function useRealtimeInterpret(meetingId: string, language: string, target
     socket.emit('join-session', meetingId)
 
     socket.on('translation-result', (data: Omit<TranslationItem, 'id'>) => {
+      setInterim('') // 확정 결과가 오면 임시 자막은 소비된 것
       setItems((prev) => [...prev, { ...data, id: `${Date.now()}-${Math.random()}` }])
+    })
+
+    socket.on('transcript-interim', (data: { text: string }) => {
+      setInterim(data.text)
     })
 
     socket.on('translation-error', (data: { message: string }) => {
@@ -99,6 +128,32 @@ export function useRealtimeInterpret(meetingId: string, language: string, target
     }
     streamRef.current = stream
 
+    // ── 모드 결정: 서버가 Deepgram 스트리밍을 지원하면 실시간 경로 ──
+    const config = await waitForSessionConfig(socket)
+
+    if (config.streaming) {
+      try {
+        const mic = await startMicStreaming(stream, (pcm) => {
+          socket.emit('audio-stream', pcm)
+        })
+        micStreamerRef.current = mic
+        modeRef.current = 'streaming'
+        socket.emit('stream-start', {
+          meetingId,
+          language,
+          ...(targetLanguage && { targetLanguage }),
+        })
+        setIsActive(true)
+        return
+      } catch {
+        // AudioWorklet 미지원 등 → 청크 모드로 계속 진행
+        modeRef.current = 'chunked'
+      }
+    } else {
+      modeRef.current = 'chunked'
+    }
+
+    // ── 청크 모드 (폴백): MediaRecorder 4초 윈도우 ──
     // AnalyserNode로 실시간 음량 모니터링
     const audioCtx = new AudioContext()
     const analyser = audioCtx.createAnalyser()
@@ -131,17 +186,22 @@ export function useRealtimeInterpret(meetingId: string, language: string, target
         if (streamRef.current && socketRef.current) {
           startChunkRecorder(streamRef.current, socketRef.current)
         }
-      }, 100)
+      }, 20)
     }, CHUNK_INTERVAL_MS)
 
     setIsActive(true)
-  }, [meetingId, startChunkRecorder])
+  }, [meetingId, startChunkRecorder, language, targetLanguage])
 
   // refs만 다루는 정리 로직 — stop()과 언마운트 cleanup이 공용으로 쓴다
   const teardown = useCallback(() => {
     shouldSendRef.current = false // 마지막 청크가 끊긴 소켓으로 버퍼링되지 않도록
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null }
     if (audioPollRef.current) { clearInterval(audioPollRef.current); audioPollRef.current = null }
+    if (modeRef.current === 'streaming') {
+      socketRef.current?.emit('stream-stop')
+      micStreamerRef.current?.stop()
+      micStreamerRef.current = null
+    }
     if (recorderRef.current?.state === 'recording') recorderRef.current.stop()
     recorderRef.current = null
     streamRef.current?.getTracks().forEach((t) => t.stop())
@@ -151,6 +211,7 @@ export function useRealtimeInterpret(meetingId: string, language: string, target
     socketRef.current?.emit('leave-session', meetingId)
     socketRef.current?.disconnect()
     socketRef.current = null
+    setInterim('')
   }, [meetingId])
 
   const stop = useCallback(() => {
@@ -165,5 +226,5 @@ export function useRealtimeInterpret(meetingId: string, language: string, target
 
   const clearItems = useCallback(() => setItems([]), [])
 
-  return { isActive, items, error, start, stop, clearItems }
+  return { isActive, items, interim, error, start, stop, clearItems }
 }

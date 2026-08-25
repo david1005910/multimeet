@@ -36,7 +36,7 @@ export default function InterpretMode() {
   const sourceLanguage = direction === 'to-ko' ? sourceLang : 'ko'
   const resolvedTarget = direction === 'to-foreign' ? targetLang : undefined
 
-  const { isActive, items, error: interpretError, start, stop, clearItems } = useRealtimeInterpret(
+  const { isActive, items, interim, error: interpretError, start, stop, clearItems } = useRealtimeInterpret(
     meetingId!, sourceLanguage, resolvedTarget
   )
 
@@ -364,6 +364,12 @@ export default function InterpretMode() {
               <p className="text-white leading-relaxed">{item.original}</p>
             </div>
           ))}
+          {/* 스트리밍 모드: 말하는 도중의 실시간 자막 */}
+          {interim && (
+            <div className="sticky bottom-0 p-3 rounded-lg" style={{ background: 'rgba(139,92,246,0.08)' }}>
+              <p style={{ color: 'rgba(167,139,250,0.75)' }}>{interim}…</p>
+            </div>
+          )}
         </div>
 
         {/* 오른쪽: 번역 */}
